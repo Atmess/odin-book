@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Users ----------
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  username     String   @unique
+  passwordHash String
+  name         String?
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // REST side
+  posts    Post[]
+  comments Comment[]
+
+  // Socket side
+  chats       ChatParticipant[]
+  messages    Message[]
+  attachments Attachment[]
+}
+
+// ---------- REST: posts and comments ----------
+model Post {
+  id          Int       @id @default(autoincrement())
+  title       String
+  content     String
+  published   Boolean   @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+
+  comments Comment[]
+
+  @@index([authorId])
+}
+
+model Comment {
+  id        Int      @id @default(autoincrement())
+  content   String
+  createdAt DateTime @default(now())
+
+  post     Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId   Int
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  authorId Int
+
+  @@index([postId, createdAt])
+}
+
+// ---------- Socket: chat ----------
+model Chat {
+  id            Int      @id @default(autoincrement())
+  isGroup       Boolean  @default(false)
+  groupName     String?  // only used if isGroup is true
+  dmKey         String?  @unique // "smallerUserId:largerUserId" for 1-to-1 chats, prevents duplicate DMs
+  lastMessageAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  participants ChatParticipant[]
+  messages     Message[]
+
+  @@index([lastMessageAt])
+}
+
+model ChatParticipant {
+  id         Int      @id @default(autoincrement())
+  joinedAt   DateTime @default(now())
+  lastReadAt DateTime @default(now()) // unread = messages in this chat newer than this, sent by others
+
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId Int
+  chat   Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chatId Int
+
+  @@unique([userId, chatId])
+  @@index([chatId])
+}
+
+model Message {
+  id        Int       @id @default(autoincrement())
+  content   String    @default("") // empty when the message is attachments only
+  createdAt DateTime  @default(now())
+  editedAt  DateTime?
+  deletedAt DateTime? // soft delete
+
+  sender   User @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  senderId Int
+  chat     Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chatId   Int
+
+  attachments Attachment[]
+
+  @@index([chatId, createdAt])
+}
+
+// Uploaded over REST first (messageId null), then linked when the socket message is sent.
+// Rows with messageId = null older than ~1 hour are abandoned uploads and can be cleaned up.
+model Attachment {
+  id          Int      @id @default(autoincrement())
+  url         String
+  name        String   // original filename
+  mimeType    String   // e.g. "image/png", "video/mp4"
+  size        Int      // bytes
+  storagePath String   // path in Supabase/Cloudinary, needed for deleting later
+  createdAt   DateTime @default(now())
+
+  uploader   User @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+  uploaderId Int
+
+  message   Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId Int?
+
+  @@index([messageId])
+}
