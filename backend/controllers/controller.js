@@ -118,15 +118,17 @@ const CreatePost = async (req,res,next) => {
       // 2. Create the file record if a file was uploaded
       let newFile = null;
       if (fileData) {
-        newFile = await prisma.file.create({
-          data: {
-            name: fileData.name,
-            size: fileData.size,
-            url: fileData.url,
-            userId: userId,
-            postId: newPost.id,
-          },
-        });
+newFile = await prisma.file.create({
+  data: {
+    name: fileData.name,
+    size: fileData.size,
+    mimeType: fileData.mimeType,
+    storagePath: fileData.storagePath,
+    url: fileData.url,
+    uploaderId: req.user.userId,  // not userId
+    postId: newPost.id,              // the post created in this transaction
+  },
+});
       }
 
       return { newPost, newFile };
@@ -168,10 +170,12 @@ const UpdateUser = async (req, res, next) => {
             // Option B: If you want to log it to your `File` table in Prisma:
              await prisma.file.create({
             data: {
-            name: fileData.name,
-            size: fileData.size,
-            url: fileData.url,
-            user:{connect:{id:userId}}
+    name: fileData.name,
+    size: fileData.size,
+    mimeType: fileData.mimeType,
+    storagePath: fileData.storagePath,
+    url: fileData.url,
+    uploaderId: req.user.userId,  // not userId
           },
         });
         }
@@ -290,6 +294,7 @@ const getUserPublish = async (req,res,next) => {
 }
 
 const getallPublish = async (req, res, next) => {
+
   try {
     const posts = await prisma.post.findMany({
       where: {

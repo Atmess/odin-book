@@ -7,7 +7,7 @@ const { createClient } = require("@supabase/supabase-js");
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // One bucket name for upload AND delete (they were different before)
-const BUCKET = "Blog_API";
+const BUCKET = "Odin_book";
 
 // ---------- helpers ----------
 
@@ -47,11 +47,13 @@ const uploadfile = async (req, res, next) => {
 
     const { data } = supabase.storage.from(BUCKET).getPublicUrl(uniqueName);
 
-    req.savedFileData = {
-      name: file.originalname,
-      size: file.size,
-      url: data.publicUrl,
-    };
+req.savedFileData = {
+  name: file.originalname,
+  size: file.size,
+  mimeType: file.mimetype,   // e.g. "image/png"
+  storagePath: uniqueName,   // needed later to delete from Supabase
+  url: data.publicUrl,
+};
     next();
   } catch (error) {
     console.error("Upload Error:", error);
@@ -63,16 +65,18 @@ const uploadfile = async (req, res, next) => {
 
 // GET /user/file : all files of the logged-in user
 const getUserFile = async (req, res, next) => {
+
   try {
     const files = await prisma.file.findMany({
-      where: { userId: req.user.userId },
-      orderBy: { uploadTime: "desc" },
+      where: { uploaderId : req.user.userId },
+      orderBy: { createdAt: "desc" },
     });
     res.status(200).json(files);
   } catch (error) {
     console.error("Get user files error:", error);
     next(error);
   }
+    
 };
 
 // GET /files/:id : file details (no password leak: select only safe fields)

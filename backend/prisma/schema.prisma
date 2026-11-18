@@ -12,7 +12,7 @@ model User {
   id           Int      @id @default(autoincrement())
   email        String   @unique
   username     String   @unique
-  passwordHash String
+  password     String
   name         String?
   avatarUrl    String?
   createdAt    DateTime @default(now())
@@ -25,7 +25,7 @@ model User {
   // Socket side
   chats       ChatParticipant[]
   messages    Message[]
-  attachments Attachment[]
+  files       File[]
 }
 
 // ---------- REST: posts and comments ----------
@@ -41,7 +41,8 @@ model Post {
   author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
   authorId Int
 
-  comments Comment[]
+  comments    Comment[]
+  files    File[]        // was: attachments Attachment[]
 
   @@index([authorId])
 }
@@ -101,14 +102,14 @@ model Message {
   chat     Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
   chatId   Int
 
-  attachments Attachment[]
+  files    File[]        // was: attachments Attachment[]
 
   @@index([chatId, createdAt])
 }
 
 // Uploaded over REST first (messageId null), then linked when the socket message is sent.
 // Rows with messageId = null older than ~1 hour are abandoned uploads and can be cleaned up.
-model Attachment {
+model File {
   id          Int      @id @default(autoincrement())
   url         String
   name        String   // original filename
@@ -123,5 +124,9 @@ model Attachment {
   message   Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
   messageId Int?
 
+  post   Post? @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId Int?
+
   @@index([messageId])
+  @@index([postId])
 }

@@ -52,13 +52,13 @@ export default function PublishedPostsPage() {
 
   if (loading)
     return (
-      <div className=" min-h-screen text-slate-100 p-6 sm:p-12  text-center py-20 text-slate-400">
+      <div className=" min-h-screen  p-6 sm:p-12  text-center py-20 text-slate-400">
         Loading posts...
       </div>
     );
   if (error)
     return (
-      <div className=" min-h-screen  text-slate-100 p-6 sm:p-12 text-center py-20 text-red-400">
+      <div className=" min-h-screen p-6 sm:p-12 text-center py-20 text-red-400">
         {error}
       </div>
     );
@@ -93,11 +93,22 @@ export default function PublishedPostsPage() {
         {/* ================= POSTS GRID / LIST ================= */}
         <div className="space-y-4">
           {filteredPosts.length === 0 ? (
-            <div className="text-center py-16 text-slate-500 text-sm italic">
-              {searchQuery
-                ? 'No posts found matching your search.'
-                : 'No posts published yet.'}
-            </div>
+            <div className="text-center py-16 px-6 rounded-xl border border-dashed border-slate-600 bg-slate-800/40">
+  <p className="text-slate-200 font-medium">
+    {searchQuery ? 'No posts match your search.' : 'No posts yet.'}
+  </p>
+  <p className="text-slate-400 text-sm mt-1">
+    {searchQuery ? 'Try a different keyword.' : 'Be the first to share something!'}
+  </p>
+  {!searchQuery && (
+    <Link
+      to="/dashboard"
+      className="inline-block mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg"
+    >
+      Create a post
+    </Link>
+  )}
+</div>
           ) : (
             <div className="grid grid-cols-1 gap-6">
               {filteredPosts.slice(0, visibleCount).map((post) => (
