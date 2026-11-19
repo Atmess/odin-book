@@ -1,314 +1,333 @@
-import { useState, useEffect } from 'react';
-import MessageCreateForm from './Messagecreateform';
-import { useAuth } from '../context/AuthContext';
-import API_BASE_URL from '../config.js'
+import { useState, useRef, useEffect } from 'react'
+import home from '../assets/picture/live-twin-home.png'
+import image from '../assets/picture/live-twin-image.jpg'
+import API_BASE_URL from '../config'
+import { useAuth } from '../context/AuthContext'
+import { useSocket } from '../context/SocketContext'
+import logo from '../assets/picture/image1.png'
 
-export default function MessagesPage() {
-  const user = useAuth();
-  const [conversations, setConversations] = useState([]);
-  const [activeContact, setActiveContact] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [newMessage, setNewMessage] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  // Add these states inside MessagesPage component:
-  const [isNewModalOpen, setIsNewModalOpen] = useState(false);
-  const [newMsgForm, setNewMsgForm] = useState({ recipient: '', content: '' });
-  const [isSending, setIsSending] = useState(false);
-  const [search, setSearch] = useState('');
-  const token = localStorage.getItem('token');
+const bgImages = [home, image]
 
+// Must match the server's limits (FilterFile in the router)
+const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB
+const ACCEPT =
+  'image/jpeg,image/png,image/gif,image/webp,application/pdf,application/msword,' +
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/zip'
 
-  // 1. Fetch conversations/contacts list on mount
+const isImageUrl = (url) => /\.(jpe?g|png|gif|webp)(\?.*)?$/i.test(url || '')
+
+// storage path looks like "<chatId>/<timestamp>-<name>", so strip the timestamp prefix
+const fileNameFromUrl = (url) =>
+  decodeURIComponent((url || '').split('/').pop().split('?')[0]).replace(/^\d+-/, '')
+
+export default function Chat({ chat }) {
+  const { user } = useAuth()
+  const { socket, connected, joinChat, leaveChat, sendMessage } = useSocket()
+
+  const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [text, setText] = useState('')
+  const [file, setFile] = useState(null)
+  const [filePreview, setFilePreview] = useState('')
+  const [sending, setSending] = useState(false)
+
+  const bottomRef = useRef(null)
+  const fileInputRef = useRef(null)
+
+  const [bgimage] = useState(() => bgImages[Math.floor(Math.random() * bgImages.length)])
+
+  const other = chat?.participants?.find((p) => p.user.id !== user?.id)?.user
+
+  // ---------- socket: join the room and listen for new messages ----------
   useEffect(() => {
-    fetchConversations();
-  }, []);
+    if (!socket || !connected || !chat?.id) return
 
-  // 2. Fetch messages whenever an active contact is selected
+    joinChat(chat.id)
+
+    const onNew = (msg) => {
+      if (msg.chatId !== chat.id) return
+      setMessages((m) => (m.some((x) => x.id === msg.id) ? m : [...m, msg]))
+    }
+
+    socket.on('newMessage', onNew)
+    return () => {
+      socket.off('newMessage', onNew)
+      leaveChat(chat.id)
+    }
+  }, [socket, connected, chat?.id])
+
+  // ---------- load history when the chat changes ----------
   useEffect(() => {
-    if (activeContact) {
-      fetchMessages(activeContact.id);
+    if (!chat?.id) {
+      setMessages([])
+      return
     }
-  }, [activeContact]);
+    setLoading(true)
+    let ignore = false
+    setMessages([])
 
-  const fetchConversations = async () => {
+    const fetchMessages = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/messages/${chat.id}`, {
+          credentials: 'include',
+        })
+        if (!response.ok) throw new Error('Failed to fetch messages')
+        const data = await response.json()
+        if (!ignore) setMessages(data)
+      } catch (err) {
+        if (!ignore) console.error('Error fetching messages:', err)
+      } finally {
+        if (!ignore) setLoading(false)
+      }
+    }
+
+    fetchMessages()
+    return () => {
+      ignore = true
+    }
+  }, [chat?.id])
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  // ---------- attachment handling ----------
+  // free the preview URL whenever it changes or the component unmounts
+  useEffect(() => {
+    return () => {
+      if (filePreview) URL.revokeObjectURL(filePreview)
+    }
+  }, [filePreview])
+
+  // drop a half-picked file when switching chats
+  useEffect(() => {
+    setFile(null)
+    setFilePreview('')
+  }, [chat?.id])
+
+  const clearFile = () => {
+    setFile(null)
+    setFilePreview('')
+  }
+
+  const handleFilePick = (e) => {
+    const picked = e.target.files?.[0]
+    e.target.value = '' // lets the user pick the same file again later
+    if (!picked) return
+    if (picked.size > MAX_FILE_SIZE) {
+      alert('File is too large (max 10 MB)')
+      return
+    }
+    setFile(picked)
+    setFilePreview(picked.type.startsWith('image/') ? URL.createObjectURL(picked) : '')
+  }
+
+  // ---------- send ----------
+  const send = async () => {
+    const messageText = text.trim()
+    if ((!messageText && !file) || sending) return
+    if (!socket || !connected) {
+      console.error('Socket not connected')
+      return
+    }
+
+    setSending(true)
+
+    // 1. upload the attachment first (if there is one)
+    let mediaUrl
+    if (file) {
+      try {
+        const form = new FormData()
+        form.append('chatId', chat.id) // text fields must come BEFORE the file
+        form.append('file', file)
+        const res = await fetch(`${API_BASE_URL}/api/upload`, {
+          method: 'POST',
+          credentials: 'include',
+          body: form, // don't set Content-Type yourself
+        })
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(body.message || 'Upload failed')
+        mediaUrl = body.url
+      } catch (err) {
+        console.error('Upload error:', err)
+        alert(err.message)
+        setSending(false)
+        return // text and file stay, so the user can retry
+      }
+    }
+
+    setText('')
+    clearFile()
+
+    // 2. show it right away (optimistic), then send through the socket
+    const tempId = 'opt_' + Date.now()
+    setMessages((m) => [
+      ...m,
+      {
+        id: tempId,
+        content: messageText,
+        mediaUrl,
+        senderId: user.id,
+        sender: user,
+        createdAt: new Date().toISOString(),
+        chatId: chat.id,
+      },
+    ])
+
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/messages/convertion`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-      if (!response.ok) throw new Error('Failed to load conversations');
-      const data = await response.json();
-      const others = data.filter((c) => c.id !== user.id);
-      setConversations(others);
-      if (others.length > 0) setActiveContact(others[0]);
+      const saved = await new Promise((resolve, reject) => {
+        sendMessage(chat.id, messageText, mediaUrl, (res) => {
+          if (!res || !res.ok) return reject(new Error(res?.error || 'Failed to send message'))
+          resolve(res.message)
+        })
+      })
+      setMessages((m) =>
+        m.some((x) => x.id === saved.id)
+          ? m.filter((x) => x.id !== tempId) // the socket listener already added it
+          : m.map((x) => (x.id === tempId ? saved : x))
+      )
     } catch (err) {
-      setError(err.message);
+      console.error('Error sending message:', err)
+      setMessages((m) => m.filter((x) => x.id !== tempId))
+      setText(messageText)
     } finally {
-      setLoading(false);
+      setSending(false)
     }
-  };
+  }
 
-  const fetchMessages = async (userId) => {
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/messages/${userId}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
-      );
-      if (!response.ok) throw new Error('Failed to load messages');
-      const data = await response.json();
-      setMessages(data);
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !activeContact) return;
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/messages/send`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          receiverId: activeContact.id,
-          content: newMessage,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || 'Failed to send message');
-      }
-      const sentMessage = await response.json();
-
-      // Append locally for instant UI update
-      setMessages((prev) => [...prev, sentMessage]);
-      setNewMessage('');
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  const handleCreateMessage = async (e) => {
-    e.preventDefault();
-    setIsSending(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/messages/send`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          recipient: newMsgForm.recipient,
-          content: newMsgForm.content,
-        }),
-      });
-
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.message || 'Failed to send message');
-      }
-
-      const sent = await response.json();
-      const user = sent.receiver; // the backend now returns who it matched
-
-      if (!conversations.some((c) => c.id === user.id)) {
-        setConversations([user, ...conversations]);
-      }
-      setActiveContact(user);
-
-      setNewMsgForm({ recipient: '', content: '' });
-      setIsNewModalOpen(false);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  const filteredConversations = conversations.filter((c) => {
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
+  // ---------- render ----------
+  if (!chat) {
     return (
-      c.username?.toLowerCase().includes(q) ||
-      c.email?.toLowerCase().includes(q) ||
-      c.lastMessage?.content?.toLowerCase().includes(q)
-    );
-  });
-  return (
-    <div>
-      <div className="text-slate-100 p-4 sm:p-8 space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Direct Messages</h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Chat securely with other users here.
-          </p>
-        </div>
+      <div className="flex items-center justify-center bg-blue-50 h-full text-slate-500">
+        Select a conversation to start chatting
+      </div>
+    )
+  }
 
+  return (
+    <div
+      className="flex flex-col h-full min-w-0 flex-1 bg-[#efeae2]"
+      style={{ backgroundImage: `url(${bgimage})` }}
+    >
+      {other && (
+        <header className="h-16 shrink-0 bg-[#f0f2f5] px-4 flex items-center">
+          <img
+            src={other.avatarUrl || logo}
+            alt={other.username}
+            className="h-8 w-8 rounded-full object-cover border border-slate-600 shrink-0"
+          />
+          <span className="ml-3">{other.username}</span>
+        </header>
+      )}
+
+      <main className="flex-1 overflow-y-auto px-8 py-4 space-y-2">
         {loading ? (
-          <div className="text-center py-20 text-slate-400">
-            Loading inbox...
-          </div>
-        ) : error ? (
-          <div className="p-4 bg-red-900/30 border border-red-500 rounded-xl text-red-300 text-center">
-            {error}
+          <p>Loading...</p>
+        ) : messages.length === 0 ? (
+          <div className="flex justify-center">
+            <span className="max-w-[65%] px-3 py-1.5 rounded-lg shadow-sm bg-red-400">
+              <p>No messages yet</p>
+            </span>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 bg-slate-800/80 border border-slate-700 rounded-2xl overflow-hidden shadow-2xl h-[600px]">
-            {/* LEFT SIDEBAR: Conversations List */}
-            {/* LEFT SIDEBAR: Conversations List */}
-            <div className="border-r border-slate-700/60 overflow-y-auto flex flex-col bg-slate-900/30">
-              <div className="p-4 border-b border-slate-700/60 font-semibold text-sm text-slate-300">
-                Conversations
-              </div>
-
-              {/* 👈 Centered Create New Button / Div */}
-              <div className="p-3 border-b border-slate-700/60 space-y-2">
-                <button
-                  onClick={() => setIsNewModalOpen(true)}
-                  className="w-full py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 rounded-xl text-xs font-semibold transition cursor-pointer"
+          messages.map((m) => {
+            const mine = m.senderId === user?.id
+            return (
+              <div key={m.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                <span
+                  className={`max-w-[65%] px-3 py-1.5 rounded-lg shadow-sm wrap:anywhere ${
+                    mine ? 'bg-[#d9fdd3]' : 'bg-white'
+                  }`}
                 >
-                  + Create New Message
-                </button>
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search name, email or message..."
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              {filteredConversations.length === 0 ? (
-                <div className="p-6 text-center text-slate-500 text-sm">
-                  {search ? 'No results.' : 'No messages yet.'}
-                </div>
-              ) : (
-                filteredConversations.map((contact) => (
-                  <button
-                    key={contact.id}
-                    onClick={() => setActiveContact(contact)}
-                    className={`w-full text-left p-4 flex items-center gap-3 transition border-b border-slate-700/30 cursor-pointer ${
-                      activeContact?.id === contact.id
-                        ? 'bg-slate-700/40 border-l-4 border-l-blue-500'
-                        : 'hover:bg-slate-700/20'
-                    }`}
-                  >
-                    <div className="w-10 h-10 rounded-full bg-slate-700 border border-slate-600 flex items-center justify-center shrink-0 font-bold text-slate-200">
-                      {contact.username?.[0]?.toUpperCase()}
-                    </div>
-                    <div className="overflow-hidden flex-1">
-                      <div className="font-medium text-white truncate">
-                        {contact.username}
-                      </div>
-                      <div className="text-xs text-slate-400 truncate">
-                        {contact.lastMessage?.content || contact.email}
-                      </div>
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-            {/* RIGHT SIDE: Active Chat Thread */}
-            <div className="col-span-2 flex flex-col h-full min-h-0 bg-slate-800/40">
-              {activeContact ? (
-                <>
-                  {/* Chat Header */}
-                  <div className="p-4 border-b border-slate-700/60 flex items-center gap-3 bg-slate-900/20">
-                    <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold text-white">
-                      {activeContact.username[0]?.toUpperCase()}
-                    </div>
-                    <span className="font-semibold text-white">
-                      @{activeContact.username}
-                    </span>
-                  </div>
-
-                  {/* Messages Body */}
-                  <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-                    {messages.length === 0 ? (
-                      <div className="text-center py-20 text-slate-500 text-sm">
-                        No messages with @{activeContact.username}. Start the
-                        conversation below!
-                      </div>
+                  {m.mediaUrl &&
+                    (m.mediaType?.startsWith('image/') || isImageUrl(m.mediaUrl) ? (
+                      <a href={m.mediaUrl} target="_blank" rel="noreferrer">
+                        <img
+                          src={m.mediaUrl}
+                          alt={m.mediaName || ''}
+                          className="mb-1 max-h-64 max-w-full rounded"
+                        />
+                      </a>
                     ) : (
-                      messages.map((msg) => {
-                        const isMe = msg.senderId !== activeContact.id;
-                        return (
-                          <div
-                            key={msg.id}
-                            className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
-                          >
-                            <div
-                              className={`max-w-md rounded-2xl px-4 py-2.5 text-sm ${
-                                isMe
-                                  ? 'bg-blue-600 text-white rounded-br-none'
-                                  : 'bg-slate-700 text-slate-200 rounded-bl-none border border-slate-600'
-                              }`}
-                            >
-                              <p>{msg.content}</p>
-                              <span
-                                className={`text-[10px] block mt-1 text-right ${isMe ? 'text-blue-200' : 'text-slate-400'}`}
-                              >
-                                {new Date(msg.createdAt).toLocaleTimeString(
-                                  [],
-                                  { hour: '2-digit', minute: '2-digit' }
-                                )}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
+                      <a
+                        href={m.mediaUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mb-1 block text-blue-600 underline"
+                      >
+                        📎 {m.mediaName || fileNameFromUrl(m.mediaUrl)}
+                      </a>
+                    ))}
+                  {m.content}
+                </span>
+              </div>
+            )
+          })
+        )}
+        <div ref={bottomRef} />
+      </main>
 
-                  {/* Message Input Form */}
-                  <form
-                    onSubmit={handleSendMessage}
-                    className="p-4 border-t border-slate-700/60 bg-slate-900/30 flex gap-2"
-                  >
-                    <input
-                      type="text"
-                      placeholder={`Message @${activeContact.username}...`}
-                      value={newMessage}
-                      onChange={(e) => setNewMessage(e.target.value)}
-                      className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                    />
-                    <button
-                      type="submit"
-                      className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-2.5 rounded-xl transition text-sm cursor-pointer"
-                    >
-                      Send
-                    </button>
-                  </form>
-                </>
-              ) : (
-                <div className="flex items-center justify-center h-full text-slate-500 text-sm">
-                  Select a conversation from the sidebar to start chatting.
-                </div>
-              )}
+      <div className="shrink-0 px-4 md:px-16 pb-3">
+        {file && (
+          <div className="mb-2 flex items-center gap-3 rounded-lg bg-white px-3 py-2 shadow-sm">
+            {filePreview ? (
+              <img src={filePreview} alt="" className="h-12 w-12 rounded object-cover" />
+            ) : (
+              <span className="text-2xl">📎</span>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm">{file.name}</p>
+              <p className="text-xs text-slate-500">
+                {(file.size / 1024).toFixed(1)} KB{sending ? ' · uploading…' : ''}
+              </p>
             </div>
+            <button
+              type="button"
+              onClick={clearFile}
+              disabled={sending}
+              aria-label="Remove attachment"
+              className="px-2 text-slate-500 hover:text-red-500 disabled:opacity-40"
+            >
+              ✕
+            </button>
           </div>
         )}
+
+        <div className="flex h-12 items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPT}
+            onChange={handleFilePick}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={sending}
+            title="Attach file"
+            aria-label="Attach file"
+            className="shrink-0 rounded-lg bg-white px-3 py-2 hover:bg-slate-100 disabled:opacity-50"
+          >
+            📎
+          </button>
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && send()}
+            placeholder={file ? 'Add a caption (optional)' : 'Type a message'}
+            className="w-full rounded-lg bg-white px-4 py-2 outline-none"
+          />
+         <button
+  type="button"
+  onClick={() => send()}
+  disabled={sending || (!text.trim() && !file)}
+  className="shrink-0 rounded-lg bg-white px-3 py-2 hover:bg-slate-100 disabled:opacity-50"
+>
+  Send
+</button> 
+        </div>
       </div>
-      {isNewModalOpen && (
-        <MessageCreateForm
-          formData={newMsgForm}
-          setFormData={setNewMsgForm}
-          handleSubmit={handleCreateMessage}
-          closeModal={() => setIsNewModalOpen(false)}
-          isSubmitting={isSending}
-        />
-      )}
     </div>
-  );
+  )
 }

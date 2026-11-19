@@ -1,7 +1,10 @@
 const prisma = require("../lib/prisma")
 
+const userSelect = { id: true, username: true, name: true, email: true, avatarUrl: true } // <-- add name
+
+
 const GetallMessage = async (req,res,next) => {
-  const userId = parseInt(req.user.userId ,10)
+  const userId = req.user?.id
 
   const user = await prisma.user.findUnique({
     where:{id:userId}
@@ -12,16 +15,13 @@ const GetallMessage = async (req,res,next) => {
   if(user.role !== 'ADMIN'){
     return res.status(403).json({message:'forbiden'})
   }
-    if (Number.isNaN(userId)) {
-  return res.status(400).json({ message: 'Invalid user id' });
-    }
     try{    // Find messages where user is sender or receiver
     const messages = await prisma.message.findMany({
       select: {
         senderId:true,
         receiverId:true,
-        sender: { select: { id: true, username: true, email: true, avatarUrl: true } },
-        receiver: { select: { id: true, username: true, email: true, avatarUrl: true } },
+        sender: { select: userSelect },
+        receiver: { select: userSelect },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -44,10 +44,7 @@ const GetallMessage = async (req,res,next) => {
 
 const getConversations = async (req, res, next) => {
   try {
-   const userId = parseInt(req.user.userId, 10);
-  if (Number.isNaN(userId)) {
-  return res.status(400).json({ message: 'Invalid user id' });
-}
+   const userId = req.user?.id;
     // Find messages where user is sender or receiver
     const messages = await prisma.message.findMany({
       where: {
@@ -57,8 +54,8 @@ const getConversations = async (req, res, next) => {
       select: {
         senderId:true,
         receiverId:true,
-        sender: { select: { id: true, username: true, email: true, avatarUrl: true } },
-        receiver: { select: { id: true, username: true, email: true, avatarUrl: true } },
+        sender: { select: userSelect},
+        receiver: { select: userSelect },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -81,8 +78,8 @@ const getConversations = async (req, res, next) => {
 // Get all messages between logged-in user and a specific contact
 const getMessagesWithUser = async (req, res, next) => {
   try {
-    const userId = req.user.userId;
-    const contactId = parseInt(req.params.id,10);
+    const userId = req.user?.id;
+    const contactId = req.params.id;
 
     const messages = await prisma.message.findMany({
       where: {
@@ -103,48 +100,35 @@ const getMessagesWithUser = async (req, res, next) => {
 // Send a new message
 const sendMessage = async (req, res, next) => {
   try {
-    const senderId = req.user.userId;
-    const { receiverId,recipient, content } = req.body; //receiver (ID) or recipient (email or username)
+    const senderId = req.user?.id;
+    const { chatId } = req.body;
+    const content = req.body.content?.trim();
 
-    if (!content) {
-      return res.status(400).json({ message: 'Receiver and content are required' });
+      console.log(chatId)
+      console.log(content)
+    if (!senderId) {
+      return res.status(401).json({ message: 'Unauthorized' });
     }
-    const userSelect = { id: true, username: true, email: true, avatarUrl: true };
-    let receiver = null;
-    if(receiverId){
-      const id= parseInt(receiverId,10)
-      if(Number.isNaN(id)){
-        return res.status(400).json({ message: 'Invalid receiver id' });
-      }
-      receiver = await prisma.user.findUnique({where: { id }, select: userSelect})
-    }else if(recipient?.trim()){
-      const value = recipient.trim().replace(/^@/, '');
-      receiver = await prisma.user.findFirst({
-          where: {
-            OR: [
-              { username: { equals: value, mode: 'insensitive' } },
-              { email: { equals: value, mode: 'insensitive' } },
-            ],
-          },
-          select: userSelect,
-      })
-    } else{
-      return res.status(400).json({ message: 'Receiver is required' });
+    if (!chatId ) {
+      return res.status(400).json({ message: 'chatId are required' });
     }
-    if (!receiver) {
-      return res.status(404).json({ message: 'User not found' });
+    if(!content){
+      return res.status(400).json({ message: 'content are required' });
     }
-    if (receiver.id === senderId) {
-      return res.status(400).json({ message: "You can't message yourself" });
-    }
-    const newMessage = await prisma.message.create({
-      data: {
-        content,
-        senderId,
-        receiverId: receiver.id,
-      },
-       include: { receiver: { select: userSelect } },
+    const participant = await prisma.chatParticipant.findFirst({
+      where: { chatId, userId: senderId },
     });
+    if (!participant) {
+      return res.status(403).json({ message: 'You are not part of this chat' });
+    }
+
+    const newMessage = await prisma.message.create({
+      data: { content, senderId, chatId },
+      include: { sender: { select: userSelect } },
+    });
+
+    // push to everyone who joined this chat's room
+    req.app.get('io').to(chatId).emit('newMessage', newMessage);
 
     res.status(201).json(newMessage);
   } catch (error) {
@@ -152,15 +136,63 @@ const sendMessage = async (req, res, next) => {
   }
 };
 
+
 const getallforUser = async (req, res, next) => {
   try {
     const users = await prisma.user.findMany({
-      where: { id: { not: req.user.userId } },
-      select: { id: true, username: true, email: true },
+      where: { id: { not: req.user?.id } },
+      select: userSelect,
     });
     res.json(users);
   } catch (err) {
     next(err);
   }
 };
-module.exports= ({GetallMessage,sendMessage,getMessagesWithUser,getConversations,getallforUser})
+
+
+const getChatMessages = async (req, res, next) => {
+    const userId = req.user.id;
+    const { chatId } = req.params;
+
+    if (!userId) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    try {
+        // Make sure this user actually belongs to the chat
+        const participant = await prisma.chatParticipant.findFirst({
+            where: { chatId, userId }
+        });
+
+        if (!participant) {
+            return res.status(403).json({ error: 'You are not part of this chat' });
+        }
+
+        const messages = await prisma.message.findMany({
+            where: { chatId },
+            orderBy: { createdAt: 'asc' },
+            include: {
+                sender: { select: userSelect }
+            }
+        });
+
+        res.status(200).json(messages);
+    } catch (err) {
+        console.error(err);
+        next(err);
+    }
+};
+
+
+const testing = async (req,res,next) => {
+      const body = req.body
+      const params = req.params
+      const user= req.user
+      console.log(body)
+      console.log(params)
+      console.log(user)
+      res.status(200).json({error:'test'})
+}
+module.exports= ({GetallMessage,sendMessage,getMessagesWithUser,getConversations,getallforUser,getChatMessages,
+  testing,
+})

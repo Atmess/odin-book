@@ -4,6 +4,8 @@ const router = express.Router();
 const controller = require('../controllers/controller')
 const filecontroller = require('../controllers/filecontroller')
 const comentController = require('../controllers/commentController')
+const authController = require('../controllers/authController')
+const chatController = require('../controllers/chatController')
 const jwt = require('jsonwebtoken')
 const JWT_SECRET = process.env.JWT_SECRET
 const multer = require('multer')
@@ -122,10 +124,17 @@ router.put('/admin/users/:id/userstatus',userController.changeUserStatus)
 router.put('/admin/posts/:id/poststatus',userController.changePostStatus)
 
 //Message section 
-router.get('/messages/convertion', messageController.getConversations)
-router.post('/messages/send', messageController.sendMessage);
-router.get('/messages/:id', messageController.getMessagesWithUser);
+    // User Profile
+    router.get('/users/me', authController.getCurrentUser);
+    router.post('/messages/find',chatController.findReceiver)
+    // Chat Rooms / Conversations
+    router.get('/chats', chatController.getUserChats);           
+    router.post('/chats', chatController.createPrivateChat);     
+    router.get('/chats/find', chatController.getChatWithUser);   
 
+    // Messages
+    router.get('/messages/:chatId', messageController.getChatMessages); 
+    router.post('/messages', FilterFile, messageController.sendMessage);
 
 // File Operations (Clean REST Style)
 router.get("/file/:id", filecontroller.fileinfoGet);              // Get file metadata

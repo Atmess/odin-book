@@ -15,7 +15,9 @@ import ProfilePage from '../UserAcces/UserProfile';
 import MiddleboardLayout from '../component/Middleboard';
 import SinglePostView from '../posts/Singlepost';
 import PublishedPostsPage from '../posts/PublishPostList';
-import MessagePage from '../Message/MessagePage';
+
+import MessageBoard from '../Message/MessageBoard';
+import MessagesPage from '../Message/MressageBoth';
 
 const routes = [
   {
@@ -31,9 +33,10 @@ const routes = [
           { path: 'posts', element: <PublishedPostsPage /> },
           { path: 'posts/:id', element: <SinglePostView /> },
           { path: 'UserProfile', element: <ProfilePage /> },
-          { path: 'message', element: <MessagePage /> },
+          
         ],
       },
+      
       {
         path: 'shop',
         element: <Shop />,
@@ -45,9 +48,13 @@ const routes = [
           { path: '/shop/mydeck', element: <MyDeck /> },
         ],
       },
+      { element: <MessageBoard />,
+        children:[{ path: 'message', element: <MessagesPage /> }],
+      },
       { path: 'cart', element: <Cart /> },
       { path: 'login', element: <Login /> },
       { path:'register',element:<Register/> },
+      
     ],
   },
 ];
